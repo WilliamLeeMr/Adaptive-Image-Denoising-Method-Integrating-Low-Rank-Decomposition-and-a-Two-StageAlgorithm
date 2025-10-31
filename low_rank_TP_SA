@@ -1,0 +1,490 @@
+clc; clear;
+tic;
+close all
+
+% 定义噪声水平
+noiseLevel = 0.01;
+
+% 加载并预处理图片
+image = im2double(imread('C:\Users\PC\Desktop\picture_denoise\all_images\bird.jpg' ));
+image = imresize(image, [256 256]); % 将图片压缩
+if size(image, 3) == 3 % 将图片变成灰色
+    image = rgb2gray(image);
+end
+
+% 添加高斯噪声
+noisy_image = imnoise(image, 'gaussian', 0, noiseLevel);
+
+%% 模拟退火代码
+% 初始化模拟退火参数
+initial_beta = 0.1;  % 初始 beta
+T = 1000;              % 初始温度
+T_min = 0.01;        % 最小温度
+alpha = 0.2;         % 冷却率
+max_iter = 2000;       % 每个温度的迭代次数
+no_improve_count_1=0;
+% 收敛判断参数
+delta_threshold = 1e-3;  % NIQE 变化阈值
+beta_threshold = 1e-3;   % beta 变化阈值
+patience = 10;           % 连续多少次变化小于阈值才收敛
+no_improve_count = 0;   % 记录连续无改进的次数
+
+% 计算初始 NIQE
+current_beta = initial_beta;
+current_niqe = objective_function(current_beta, noisy_image);
+best_beta = current_beta;
+best_niqe = Inf;
+
+% 记录优化过程
+beta_history = [];
+niqe_history = [];
+best_niqe_history = [];
+best_beta_history = [];
+temperature_history = [];
+converge_iter = []; % 记录收敛时的迭代次数
+
+
+% 模拟退火优化
+while T > T_min
+    for i = 1:max_iter
+        % 保存旧解
+        previous_beta = current_beta;
+        previous_niqe = current_niqe;
+        
+       % 生成新解
+       new_beta = current_beta + (rand - 0.5) * 1;
+       new_beta = max(0.01, min(1, new_beta));
+       new_niqe = objective_function(new_beta, noisy_image);
+        
+       
+        % 计算接受概率
+        delta = new_niqe - previous_niqe; % 新解与旧解的差异
+        if delta < 0 || exp(-delta / T) > rand
+            current_beta = new_beta;
+            current_niqe = new_niqe;
+        end
+
+        % 记录最优解
+        if current_niqe < best_niqe
+            best_beta = current_beta;
+            best_niqe = current_niqe;
+            no_improve_count = 0;  % 重新计数
+        else
+            no_improve_count = no_improve_count + 1;
+        end
+        % 更新最佳历史
+        if current_niqe < best_niqe
+            best_niqe = current_niqe;
+            best_beta = current_beta;
+        end
+
+        % 更新历史记录
+        best_niqe_history = [best_niqe_history, best_niqe];
+        best_beta_history = [best_beta_history, best_beta];  % 记录最佳 beta
+        temperature_history = [temperature_history, T];  % 记录温度
+        beta_history = [beta_history, current_beta];  % 记录当前 beta
+        niqe_history = [niqe_history, current_niqe];  % 记录当前 NIQE
+       
+        % 收敛判断：比较当前解与旧解的差异
+        delta_niqe = current_niqe - previous_niqe;
+        delta_beta = current_beta - previous_beta;
+        if abs(delta_niqe) < delta_threshold && abs(delta_beta) < beta_threshold
+           no_improve_count_1=no_improve_count_1+1;
+        else
+           no_improve_count_1=0;%重新计数
+        end
+        
+         if no_improve_count_1 >= patience
+           T = 0;
+           disp('收敛：NIQE 变化 & beta 变化过小');
+           converge_iter = length(best_niqe_history);
+           break;
+        end
+        
+        if no_improve_count >= patience
+            disp('收敛：NIQE 多次未改进');
+            T = 0;  % 强制终止
+            converge_iter = length(best_niqe_history);
+            break;
+        end
+    end
+     
+    % 降低温度
+    T = T * alpha;
+end
+% 输出最优解
+fprintf('最优 beta 值 = %.1e\n', best_beta);
+
+% 用最优 beta 生成恢复后的图像
+[restored_image_optimal,cartoon_0, texture_0,restored_cartoon,restored_texture] = apply_optimal_beta(best_beta, noisy_image);
+
+% 增加亮度
+brightened_image =restored_image_optimal  + 0.03;
+restored_image_optimal = min(brightened_image, 1);
+
+figure;
+subplot(1, 3, 1);
+imshow(image);
+title('原始图片');
+
+subplot(1, 3, 2);
+imshow(noisy_image);
+title('加噪声的图片');
+
+subplot(1, 3, 3);
+imshow(restored_image_optimal);
+title('最优 beta 恢复后的图片');
+
+% 原图与最终图片之间的误差
+[fipsnr, fierror] = calculateMetrics(image,restored_image_optimal);
+disp(['原图与最终的图片的 PSNR: ', num2str(fipsnr)]);
+disp(['原图与最终的图片的误差: ', num2str(fierror)]);
+
+% 原图与加噪声图片之间的误差
+[impsnr, imerror] = calculateMetrics(image,noisy_image);
+disp(['原图与加噪声的图片的 PSNR: ', num2str(impsnr)]);
+disp(['原图与加噪声的图片的误差: ', num2str(imerror)]);
+% 定义桌面主文件夹的路径
+desktopPath = fullfile(getenv('USERPROFILE'), 'Desktop');
+mainFolder = fullfile(desktopPath, 'pepper_DenoisedImages_bird ');
+
+% 创建主文件夹（如果不存在）
+if ~exist(mainFolder, 'dir')
+    mkdir(mainFolder);
+end
+
+% 使用噪声水平创建新的子文件夹
+newFolderName = ['NoiseLevel_', num2str(noiseLevel)];
+outputFolder = fullfile(mainFolder, newFolderName);
+mkdir(outputFolder);
+
+% 保存不显示标题的图片
+imwrite(im2uint8(image), fullfile(outputFolder, 'original_image.jpg'));
+imwrite(im2uint8(noisy_image), fullfile(outputFolder, 'noisy_image.jpg'));
+imwrite(im2uint8(restored_image_optimal), fullfile(outputFolder, 'final_image.jpg'));
+imwrite(im2uint8(cartoon_0), fullfile(outputFolder, 'cartoon.jpg'));
+imwrite(im2uint8(texture_0), fullfile(outputFolder, 'texture.jpg'));
+imwrite(im2uint8(restored_cartoon), fullfile(outputFolder, 'cartoon_restored.jpg'));
+imwrite(im2uint8(restored_texture), fullfile(outputFolder, 'texture_restored.jpg'));
+
+elapsedTime=toc;
+% 保存闭运算的 PSNR 值与误差到文本文件
+resultsFile = fullfile(outputFolder, 'results.txt');
+fileID = fopen(resultsFile, 'w');
+fprintf(fileID, '原图与原图加噪声的误差: %.5f\n',imerror);
+fprintf(fileID, '原图与原图加噪声的psnr: %.2f\n',impsnr);
+fprintf(fileID, '最后的PSNR: %.2f\n', fipsnr);
+fprintf(fileID, '最后的误差: %.5f\n', fierror);
+fprintf(fileID, '运行时间: %.5f 秒\n', elapsedTime); 
+fprintf(fileID, '最佳 NIQE 历史:\n');
+% 写入收敛原因
+if T == 0  % 说明优化过程中被强制终止
+    if abs(delta) < delta_threshold && abs(new_beta - current_beta) < beta_threshold
+        fprintf(fileID, '优化过程被强制终止：NIQE 变化和 beta 变化过小，达到收敛条件。\n');
+    elseif no_improve_count >= patience
+        fprintf(fileID, '优化过程被强制终止：NIQE 多次未改进，达到收敛条件。\n');
+    end
+end
+fprintf(fileID, ' NIQE 历史:\n');
+for i = 1:length(niqe_history)
+    fprintf(fileID, '%d\t%.6f\n', i, niqe_history(i));
+end
+fprintf(fileID, ' beta 历史:\n');
+for i = 1:length(beta_history)
+    fprintf(fileID, '%d\t%.6f\n', i, beta_history(i));
+end
+fprintf(fileID, ' 最佳NIQE 历史:\n');
+for i = 1:length(niqe_history)
+    fprintf(fileID, '%d\t%.6f\n', i, best_niqe_history(i));
+end
+fprintf(fileID, '最佳 beta 历史:\n');
+for i = 1:length(beta_history)
+    fprintf(fileID, '%d\t%.6f\n', i, best_beta_history(i));
+end
+
+fclose(fileID);
+
+%% 使用最优 beta 恢复图像的函数
+function [restored_image,cartoon_0, texture_0,restored_cartoon,restored_texture] = apply_optimal_beta(beta, noisy_image)
+    % 配置恢复图像的参数
+    opts.Tol = 1.4e-2;
+    opts.tau = 1e-3;
+    opts.mu = 1e-6;
+    opts.beta1 = beta;
+    opts.beta2 = beta;
+
+    % PPSM 参数
+    alg_opts.gamma = 1.5;
+    alg_opts.s = 10;
+    alg_opts.r = 10;
+
+    % 执行图像降噪处理
+    [restored_image, cartoon_0, texture_0,restored_cartoon,restored_texture] = restore_image(noisy_image, opts, alg_opts);
+end
+
+%% 牛顿算法目标函数
+function  niqeValue  = objective_function(beta, noisy_image)
+    % 配置恢复图像的参数
+    opts.Tol = 1.4e-2;
+    opts.tau = 1e-3;
+    opts.mu = 1e-6;
+    opts.beta1 = beta;
+    opts.beta2 = beta;
+
+    % PPSM 参数
+    alg_opts.gamma = 1.5;
+    alg_opts.s = 10;
+    alg_opts.r = 10;
+
+    % 执行图像降噪处理
+    [restored_image_1, ~, ~] = restore_image(noisy_image, opts, alg_opts);
+    
+    % 使用形态学闭运算
+    se = strel('line', 3, 0);
+    erodedImg = imclose(restored_image_1, se);
+    
+    % 计算 NIQE
+    niqeValue = niqe(erodedImg);
+end
+
+%% TP算法与低秩分解结合
+function [restored_image, cartoon_0, texture_0,restored_cartoon,restored_texture] = restore_image(inputImage, opts, alg_opts)
+    I = inputImage;
+    if size(I, 2) > 256
+       I = I(1:256, 257:end);
+    else
+       I = I(1:256, :);  % 若图像宽度小于257，则不做裁剪
+    end
+
+    opts.MaxIt = 200;
+    K    = 1;
+    opts.I     = I;
+    x0   = I;
+    OPTK = 'I';
+    [cartoon, texture] = CLRP_PPSM(x0, K, OPTK, opts, alg_opts);
+
+    cartoon_0 = cartoon;
+    texture_0 = texture;
+    cartoon_1 = im2double(cartoon);
+    texture_1 = im2double(texture);
+
+    %TV正则化
+    restored_cartoon = admm_solver(cartoon_1, 2000);
+
+    %shearlet正则化
+    lambda_1 = 1e3;
+    restored_texture = framelet_regularization(texture_1, lambda_1);
+
+    
+    restored_image = restored_cartoon + restored_texture;
+end
+
+%% 计算PSNR和误差
+function [psnrValue, errorValue] = calculateMetrics(originalImage, processedImage)
+    originalImage = im2double(originalImage);
+    processedImage = im2double(processedImage);
+    
+    mse = mean((originalImage(:) - processedImage(:)).^2);
+    psnrValue = 10 * log10(1 / mse);
+    errorValue = sqrt(sum((originalImage(:) - processedImage(:)).^2) / numel(originalImage));
+end
+
+%% ADMM求解TV正则化函数
+function u = admm_solver(image, max_iter)
+    [m, n] = size(image);
+    u = zeros(m, n);
+    z = zeros(m, n);
+    dual = zeros(m, n);
+
+    rho = 0.3;
+    alpha = 0.01;
+    
+    for iter = 1:max_iter
+        % 更新u
+        u = (image + rho * (z - dual)) / (1 + rho);
+
+        % 更新z
+        z = sign(u + dual) .* max(abs(u + dual) - alpha / rho, 0);
+
+        % 更新dual变量
+        dual = dual + (u - z);
+        
+        % 收敛检查
+        if norm(u - z, 'fro') / norm(u, 'fro') < 1e-7
+            break;
+        end
+    end
+end
+
+%% framelet正则化处理
+function reg_image = framelet_regularization(image, lambda)
+    % 创建 Shearlet 系统
+    shearSys = shearletSystem('ImageSize', size(image));
+    coeffs = sheart2(shearSys, image);  % Shearlet 变换
+    
+    % 软阈值处理
+    for i = 1:numel(coeffs)
+        coeffs(i) = soft_threshold(coeffs(i), lambda);
+    end
+    reg_image = isheart2(shearSys, coeffs);  % 重构图像
+end
+
+function thresholded = soft_threshold(coeffs, lambda)
+    thresholded = sign(coeffs) .* max(abs(coeffs) - lambda, 0);
+end
+
+%% 低秩分解图片
+function [u, v, out] = CLRP_PPSM(x0, K, OPTK, opts, alg_opts)
+    tau  = opts.tau;   
+    mu  = opts.mu;
+    beta1 = opts.beta1;     
+    beta2 = opts.beta2;
+    MaxIt = opts.MaxIt;  
+    I = opts.I;      
+    Tol = opts.Tol;
+    [n1, n2, n3] = size(x0);
+
+    alg_gamma = alg_opts.gamma;
+    alg_s = alg_opts.s;
+    alg_r = alg_opts.r;
+    if alg_s*alg_r <= 2
+        error('请检查算法参数！')
+    end
+
+    d1h = zeros(n1, n2, n3); 
+    d1h(1, 1, :) = -1; 
+    d1h(n1, 1, :) = 1; 
+    d1h = fft2(d1h);
+    
+    d2h = zeros(n1, n2, n3); 
+    if n2 > 0
+        d2h(1, 1, :) = -1;
+        d2h(1, n2, :) = 1;
+    end
+    d2h = fft2(d2h);
+
+    Px  = @(x) [x(2:n1, :, :)-x(1:n1-1, :, :); x(1, :, :)-x(n1, :, :)]; 
+    Py  = @(x) [x(:, 2:n2, :)-x(:, 1:n2-1, :), x(:, 1, :)-x(:, n2, :)]; 
+    PTx = @(x) [x(n1, :, :)-x(1, :, :); x(1:n1-1, :, :)-x(2:n1, :, :)]; 
+    PTy = @(x) [x(:, n2, :)-x(:, 1, :), x(:, 1:n2-1, :)-x(:, 2:n2, :)]; 
+
+    u  = zeros(n1, n2, n3);
+    v  = zeros(n1, n2, n3);
+    v_tilde = zeros(n1, n2, n3);
+    y1 = zeros(n1, n2, n3); y2 = zeros(n1, n2, n3);
+    z  = zeros(n1, n2, n3);
+    lbd11 = zeros(n1, n2, n3); lbd12 = zeros(n1, n2, n3);
+    lbd2  = zeros(n1, n2, n3);
+
+switch lower(OPTK)
+    case 'i'  %%%%%%%%%%%%%%%%%%%%%%%%% K = I %%%%%%%%%%%%%%%%
+        MDz   = 1 + alg_r*beta2;  ATf = x0;
+    case 's'  %%%%%%%%%%%%%%%%%%%%%%%%% K = S %%%%%%%%%%%%%%%%
+        MDz   = K + alg_r*beta2;  ATf = K.*x0;
+    case 'b'  %%%%%%%%%%%%%%%%%%%%%%%%% K = B %%%%%%%%%%%%%%%%
+        siz = size(K); center = [fix(siz(1)/2+1),fix(siz(2)/2+1)];
+        P   = zeros(n1,n2,n3); for i =1:n3; P(1:siz(1),1:siz(2),i) = K; end
+        Bm   = fft2(circshift(P,1-center));
+        HT  = @(x) real(ifft2(conj(Bm).*fft2(x))); %%% Transpose of blur operator.
+        MDz = abs(Bm).^2 + alg_r*beta2;  ATf   = HT(x0);
+end
+MDu   = beta1*(abs(d1h).^2+abs(d2h).^2) + beta2;
+
+Time = zeros(1,MaxIt);
+SNR  = zeros(1,MaxIt);
+
+for itr = 1:MaxIt
+    
+    %%% step 1: un
+    tic;
+    Temp= PTx(beta1*y1 + alg_s*lbd11)+PTy(beta1*y2+alg_s*lbd12)+beta2*(z-v)+alg_s*lbd2;
+    un  = real(ifft2(fft2(Temp)./MDu));
+    time_u = toc;
+    
+    %%%% update Lagrangian multipliers
+    tic;
+    dun1= Px(un);
+    dun2= Py(un);
+    lbd11_tilde= lbd11 + beta1/alg_s*(y1-dun1);
+    lbd12_tilde= lbd12 + beta1/alg_s*(y2-dun2);
+    lbd2_tilde = lbd2  + beta2/alg_s*(z-un-v);
+    time_l = toc;
+    
+    %%% step 2: \tilde v
+    tic;
+    Temp = v + (2*lbd2_tilde-lbd2)/alg_r/beta2;
+    for ii = 1:n3
+        [U,D,VT] = svd(Temp(:,:,ii),'econ');
+        D    = diag(D);
+        ind  = find(D>mu/beta2/alg_r);
+        D    = diag(D(ind) - mu/beta2/alg_r);
+        v_tilde(:,:,ii)   = U(:,ind) * D * VT(:,ind)';
+    end
+    time_v = toc;
+    
+    %%% step 3: \tilde y
+    tic;
+    Temp1 = y1 - (2*lbd11_tilde-lbd11)/alg_r/beta1;
+    Temp2 = y2 - (2*lbd12_tilde-lbd12)/alg_r/beta1;
+    nsk = sqrt(Temp1.^2 + Temp2.^2); nsk(nsk==0)=1;
+    nsk = max(1-(tau/beta1/alg_r)./nsk,0);
+    y1_tilde = Temp1.*nsk;
+    y2_tilde = Temp2.*nsk;
+    time_y = toc;
+    
+    %%% step 4: \tilde z
+    tic;
+    Temp = ATf + alg_r*beta2*z - 2*lbd2_tilde + lbd2;
+    if lower(OPTK) == 'b'
+        z_tilde = real(ifft2(fft2(Temp)./MDz));
+    else
+        z_tilde = Temp./MDz;
+    end
+    time_z = toc;
+    
+    %%% step 5: relaxation
+    tic;
+    vn = v - alg_gamma*(v-v_tilde);
+    yn1 = y1 - alg_gamma*(y1 - y1_tilde);
+    yn2 = y2 - alg_gamma*(y2 - y2_tilde);
+    zn  = z - alg_gamma*(z - z_tilde);
+    lbdn11 = lbd11 - alg_gamma*(lbd11 -lbd11_tilde);
+    lbdn12 = lbd12 - alg_gamma*(lbd12 -lbd12_tilde);
+    lbdn2  = lbd2 - alg_gamma*(lbd2 -lbd2_tilde);
+    time_update = toc;
+    if alg_gamma==1
+        time_update = 0;
+    end
+    
+    %%% outputs
+    Time(itr)= time_u + max([time_v,time_y,time_z]) + time_l + time_update;
+    SNR(itr) = 20*log10(norm(I(:))/norm(un(:)+vn(:)-I(:)));
+    %%% stopping rule
+    Stopic = compute_tol(u,v,un,vn);
+    
+    
+    if Stopic<Tol && itr >1
+        u = un;
+        v = vn;
+        %fprintf('It=%d,cpu=%4.2f,\n',itr,sum(Time));
+        Time = Time(1:itr);
+        SNR  = SNR(1:itr);
+        break;
+    end
+    
+    u = un ; v = vn;
+    y1 = yn1; y2 = yn2; z = zn;
+    lbd11 = lbdn11; lbd12 = lbdn12; lbd2 = lbdn2;
+end
+out.It   =itr;
+out.Stopic = Stopic;
+out.Time = Time;
+out.SNR  = SNR;
+% 停止条件函数
+    function Stopic = compute_tol(x1, y1, x2, y2)
+        % 计算两个矩阵之间变化率的停止条件
+        r1 = norm(x1(:) - x2(:)) / (1 + norm(x2(:)));
+        r2 = norm(y1(:) - y2(:)) / (1 + norm(y2(:)));
+        Stopic = max(r1, r2);
+    end
+end
